@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   Clock,
   DollarSign,
+  Edit,
   Globe,
   LogOut,
   Mail,
@@ -21,6 +22,7 @@ import {
   Phone,
   Plus,
   RefreshCw,
+  Save,
   Shield,
   ShoppingBag,
   Star,
@@ -30,6 +32,11 @@ import {
   User,
   X,
   Eye,
+  Settings,
+  Building,
+  Home,
+  Award,
+  Calendar,
 } from 'lucide-react';
 import supabase from '@/lib/supabaseClient';
 import Navbar from '@/components/Navbar';
@@ -44,13 +51,12 @@ type AccountUser = {
   last_name?: string | null;
   phone_number?: string | null;
   role?: Role | string | null;
-};
-
-type ProduceCategory = {
-  id: number;
-  name: string;
-  description?: string | null;
-  is_active?: boolean | null;
+  location?: string | null;
+  location_lat?: number | null;
+  location_lng?: number | null;
+  preferred_language?: string | null;
+  updated_at?: string;
+  verified?: boolean;
 };
 
 type FarmProduceRow = {
@@ -93,27 +99,31 @@ type BuyerOrderRow = {
   created_at: string;
 };
 
-// farmer_orders view row (optional)
-type FarmerOrderRow = {
+type FarmerProfile = {
   id: string;
-  listing_id: string;
-  buyer_id: string | null;
-  buyer_name: string;
-  farmer_name: string;
-  crop_name: string;
-  quantity_kg: number;
-  agreed_price_per_kg: number;
-  distance_km: number | null;
-  quality: string;
-  status: string;
+  auth_user_id: string | null;
+  accounts_user_id: string | null;
+  farm_name: string;
+  farm_location: string;
+  farm_size: number | null;
+  farm_size_unit: string | null;
+  crops_grown: string[] | null;
+  years_of_experience: number | null;
+  certification: string | null;
+  bio: string | null;
+  profile_image_url: string | null;
+  total_products_listed: number | null;
+  total_sales: number | null;
+  rating: number | null;
   created_at: string;
-  total_price: number | null;
+  updated_at: string;
 };
 
-type TabKey = 'overview' | 'products' | 'orders' | 'analytics';
+type TabKey = 'overview' | 'products' | 'orders' | 'analytics' | 'settings';
 
 // -------------------- Constants --------------------
 const PRODUCE_BUCKET = 'produce-photos';
+const PROFILE_BUCKET = 'profile-images';
 
 // -------------------- Helpers --------------------
 function cap(s?: string | null) {
@@ -176,11 +186,6 @@ function getRoleColor(role?: string | null) {
   }
 }
 
-function buildGoogleMapsLink(lat?: number | null, lng?: number | null) {
-  if (typeof lat !== 'number' || typeof lng !== 'number') return null;
-  return `https://www.google.com/maps?q=${lat},${lng}`;
-}
-
 function safeRole(role?: string | null): Role {
   const r = String(role || 'guest').toLowerCase();
   const allowed: Role[] = ['admin', 'farmer', 'buyer', 'logistics', 'finance', 'guest'];
@@ -200,25 +205,47 @@ export default function ProfilePage() {
   const [user, setUser] = useState<AccountUser | null>(null);
   const role = safeRole(user?.role || 'guest');
 
-  // Farmer products
+  // Farmer data
   const [products, setProducts] = useState<FarmProduceRow[]>([]);
-  const [categories, setCategories] = useState<ProduceCategory[]>([]);
-  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [farmerProfile, setFarmerProfile] = useState<FarmerProfile | null>(null);
+  const [farmerOrders, setFarmerOrders] = useState<BuyerOrderRow[]>([]);
 
-  // Orders
+  // Buyer data
   const [buyerOrders, setBuyerOrders] = useState<BuyerOrderRow[]>([]);
-  const [farmerOrders, setFarmerOrders] = useState<FarmerOrderRow[]>([]);
 
-  // Errors & Messages
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  // Settings state
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editingFarmerProfile, setEditingFarmerProfile] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  
+  // Profile form fields
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [location, setLocation] = useState('');
+  const [locationLat, setLocationLat] = useState<number | null>(null);
+  const [locationLng, setLocationLng] = useState<number | null>(null);
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
+
+  // Farmer profile form fields
+  const [farmName, setFarmName] = useState('');
+  const [farmLocation, setFarmLocation] = useState('');
+  const [farmSize, setFarmSize] = useState<string>('');
+  const [farmSizeUnit, setFarmSizeUnit] = useState('acres');
+  const [yearsOfExperience, setYearsOfExperience] = useState<string>('');
+  const [certification, setCertification] = useState('');
+  const [bio, setBio] = useState('');
+  const [cropsGrown, setCropsGrown] = useState<string[]>([]);
+  const [newCrop, setNewCrop] = useState('');
+
+  // Profile image
+  const [profileImageFile, setProfileImageFile] = useState<File | null>(null);
+  const [profileImagePreview, setProfileImagePreview] = useState<string | null>(null);
 
   // Add Product Modal (farmer-only)
   const [showAddModal, setShowAddModal] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
-
-  // Form fields
   const [cropName, setCropName] = useState('');
   const [variety, setVariety] = useState('');
   const [quality, setQuality] = useState<'top' | 'standard' | 'fair'>('standard');
@@ -226,20 +253,17 @@ export default function ProfilePage() {
   const [unit, setUnit] = useState<'kg' | 'bag' | 'bunch' | 'piece'>('kg');
   const [pricePerUnit, setPricePerUnit] = useState('');
   const [availableFrom, setAvailableFrom] = useState(todayISO());
-  const [selectedCategoryId, setSelectedCategoryId] = useState<number | ''>('');
   const [description, setDescription] = useState('');
-
-  // Location
-  const [farmerLocation, setFarmerLocation] = useState('');
   const [distanceKm, setDistanceKm] = useState('');
   const [lat, setLat] = useState<number | null>(null);
   const [lng, setLng] = useState<number | null>(null);
-  const [isGettingLocation, setIsGettingLocation] = useState(false);
-
-  // Image
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+
+  // Errors & Messages
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const initials = useMemo(() => {
     const f = user?.first_name?.trim()?.[0] ?? '';
@@ -257,41 +281,20 @@ export default function ProfilePage() {
 
   const isLoggedIn = Boolean(authUserId);
 
-  // Farmer stats
-  const totalRevenue = useMemo(() => products.reduce((sum, p) => sum + Number(p.price_per_unit) * Number(p.quantity), 0), [
-    products,
-  ]);
+  // Stats
+  const totalRevenue = useMemo(() => products.reduce((sum, p) => sum + Number(p.price_per_unit) * Number(p.quantity), 0), [products]);
   const activeProducts = useMemo(() => products.filter((p) => p.is_available).length, [products]);
   const avgPrice = useMemo(() => {
     const qty = products.reduce((s, p) => s + Number(p.quantity || 0), 0);
     if (!qty) return 0;
     return totalRevenue / qty;
   }, [products, totalRevenue]);
-
-  // Buyer stats
   const buyerSpend = useMemo(
     () => buyerOrders.reduce((s, o) => s + Number(o.quantity_kg || 0) * Number(o.agreed_price_per_kg || 0), 0),
     [buyerOrders]
   );
 
   // -------------------- Data loaders --------------------
-  const loadCategories = async () => {
-    setCategoriesLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('produce_categories')
-        .select('id,name,description,is_active')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
-      if (error) throw error;
-      setCategories(data || []);
-    } catch {
-      setCategories([]);
-    } finally {
-      setCategoriesLoading(false);
-    }
-  };
-
   const loadAll = async () => {
     setError(null);
     setSuccess(null);
@@ -299,14 +302,13 @@ export default function ProfilePage() {
     const { data: sessionResp } = await supabase.auth.getSession();
     const sessionUser = sessionResp?.session?.user || null;
 
-    // Guest mode
     if (!sessionUser) {
       setAuthUserId(null);
       setUser({ id: 'guest', email: 'guest', first_name: 'Guest', last_name: null, role: 'guest', phone_number: null });
       setProducts([]);
       setBuyerOrders([]);
       setFarmerOrders([]);
-      setSuccess(null);
+      setFarmerProfile(null);
       return;
     }
 
@@ -323,7 +325,7 @@ export default function ProfilePage() {
     // Load profile from accounts_user
     const { data: profile, error: profileError } = await supabase
       .from('accounts_user')
-      .select('id,email,first_name,last_name,phone_number,role')
+      .select('*')
       .eq('email', email)
       .maybeSingle<AccountUser>();
 
@@ -335,45 +337,67 @@ export default function ProfilePage() {
 
     setUser(profile);
 
+    // Set profile form fields
+    setFirstName(profile.first_name || '');
+    setLastName(profile.last_name || '');
+    setPhoneNumber(profile.phone_number || '');
+    setLocation(profile.location || '');
+    setLocationLat(profile.location_lat || null);
+    setLocationLng(profile.location_lng || null);
+
     const r = safeRole(profile.role);
 
     // Role-specific loads
     if (r === 'farmer') {
-      const [{ data: productsData, error: productsError }, { data: farmerOrdersData }] = await Promise.all([
-        supabase.from('farm_produce').select('*, produce_categories(id,name)').eq('farmer_id', authId).order('listed_at', {
-          ascending: false,
-        }),
-        // farmer_orders view doesn’t have farmer_id. We'll filter by farmer_name (works if you store consistent farmer_name).
-        supabase.from('farmer_orders').select('*').eq('farmer_name', `${(profile.first_name || '').trim()} ${(profile.last_name || '').trim()}`.trim()).order('created_at', { ascending: false }),
+      const [
+        { data: productsData },
+        { data: farmerOrdersData },
+        { data: farmerProfileData }
+      ] = await Promise.all([
+        supabase
+          .from('farm_produce')
+          .select('*, produce_categories(id,name)')
+          .eq('farmer_id', authId)
+          .order('listed_at', { ascending: false }),
+        supabase
+          .from('market_matches')
+          .select('*')
+          .eq('farmer_id', authId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('farmer_profiles')
+          .select('*')
+          .eq('auth_user_id', authId)
+          .maybeSingle<FarmerProfile>()
       ]);
 
-      if (productsError) {
-        setProducts([]);
-        setError('Failed to load products. Please try again.');
-      } else {
-        setProducts((productsData || []) as FarmProduceRow[]);
+      setProducts((productsData || []) as FarmProduceRow[]);
+      setFarmerOrders(farmerOrdersData || []);
+      
+      if (farmerProfileData) {
+        setFarmerProfile(farmerProfileData);
+        // Set farmer profile form fields
+        setFarmName(farmerProfileData.farm_name || '');
+        setFarmLocation(farmerProfileData.farm_location || '');
+        setFarmSize(farmerProfileData.farm_size?.toString() || '');
+        setFarmSizeUnit(farmerProfileData.farm_size_unit || 'acres');
+        setYearsOfExperience(farmerProfileData.years_of_experience?.toString() || '');
+        setCertification(farmerProfileData.certification || '');
+        setBio(farmerProfileData.bio || '');
+        setCropsGrown(farmerProfileData.crops_grown || []);
+        setProfileImagePreview(farmerProfileData.profile_image_url);
       }
-
-      setFarmerOrders((farmerOrdersData || []) as FarmerOrderRow[]);
     }
 
     if (r === 'buyer') {
-      const { data: ordersData, error: ordersError } = await supabase
+      const { data: ordersData } = await supabase
         .from('market_matches')
-        .select('id, listing_id, buyer_id, buyer_name, farmer_name, crop_name, quantity_kg, agreed_price_per_kg, distance_km, quality, status, created_at')
+        .select('*')
         .eq('buyer_id', authId)
-        .order('created_at', { ascending: false })
-        .limit(300);
+        .order('created_at', { ascending: false });
 
-      if (ordersError) {
-        setBuyerOrders([]);
-        setError('Failed to load your orders.');
-      } else {
-        setBuyerOrders((ordersData || []) as BuyerOrderRow[]);
-      }
+      setBuyerOrders(ordersData || []);
     }
-
-    setSuccess('Data loaded');
   };
 
   useEffect(() => {
@@ -381,7 +405,7 @@ export default function ProfilePage() {
 
     const init = async () => {
       setLoading(true);
-      await Promise.all([loadAll(), loadCategories()]);
+      await loadAll();
       if (mounted) setLoading(false);
     };
 
@@ -396,12 +420,11 @@ export default function ProfilePage() {
       mounted = false;
       data.subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshData = async () => {
     setRefreshing(true);
-    await Promise.all([loadAll(), loadCategories()]);
+    await loadAll();
     setRefreshing(false);
   };
 
@@ -410,8 +433,192 @@ export default function ProfilePage() {
     router.replace('/login');
   };
 
-  // -------------------- Farmer-only Modal helpers --------------------
-  const resetForm = () => {
+  // -------------------- Profile Update Functions --------------------
+  const requestLocation = async () => {
+    setIsGettingLocation(true);
+    setError(null);
+
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported by this browser.');
+      setIsGettingLocation(false);
+      return;
+    }
+
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0,
+        });
+      });
+
+      const { latitude, longitude } = position.coords;
+      setLocationLat(latitude);
+      setLocationLng(longitude);
+      
+      if (!location) {
+        setLocation(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+      }
+    } catch (err: any) {
+      setError(`Failed to get location: ${err?.message || 'Permission denied or timeout'}`);
+    } finally {
+      setIsGettingLocation(false);
+    }
+  };
+
+  const uploadProfileImage = async (file: File, userId: string) => {
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const fileName = `profile_${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
+    const path = `${userId}/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(PROFILE_BUCKET)
+      .upload(path, file, {
+        upsert: true,
+        contentType: file.type || 'image/jpeg',
+      });
+    
+    if (uploadError) throw uploadError;
+
+    const { data } = supabase.storage.from(PROFILE_BUCKET).getPublicUrl(path);
+    if (!data?.publicUrl) throw new Error('Failed to generate public URL for image.');
+    return data.publicUrl;
+  };
+
+  const handleProfileImageSelect = (file: File | null) => {
+    if (!file) {
+      setProfileImageFile(null);
+      setProfileImagePreview(null);
+      return;
+    }
+
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (!validTypes.includes(file.type)) {
+      setError('Please select a valid image file (JPEG, PNG, or WebP).');
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setError('Image size should be less than 3MB.');
+      return;
+    }
+
+    setProfileImageFile(file);
+    setProfileImagePreview(URL.createObjectURL(file));
+  };
+
+  const removeProfileImage = () => {
+    setProfileImageFile(null);
+    setProfileImagePreview(null);
+  };
+
+  const saveUserProfile = async () => {
+    if (!user || !authUserId) {
+      setError('User not authenticated.');
+      return;
+    }
+
+    setSavingProfile(true);
+    setError(null);
+
+    try {
+      const updates: any = {
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        phone_number: phoneNumber.trim() || null,
+        location: location.trim() || null,
+        location_lat: locationLat,
+        location_lng: locationLng,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: updateError } = await supabase
+        .from('accounts_user')
+        .update(updates)
+        .eq('id', user.id);
+
+      if (updateError) throw updateError;
+
+      // Update farmer profile if exists
+      if (role === 'farmer' && farmerProfile) {
+        const farmerUpdates: any = {
+          farm_name: farmName.trim(),
+          farm_location: farmLocation.trim(),
+          farm_size: farmSize ? parseFloat(farmSize) : null,
+          farm_size_unit: farmSizeUnit,
+          years_of_experience: yearsOfExperience ? parseInt(yearsOfExperience) : null,
+          certification: certification.trim() || null,
+          bio: bio.trim() || null,
+          crops_grown: cropsGrown.length > 0 ? cropsGrown : null,
+          updated_at: new Date().toISOString(),
+        };
+
+        // Upload profile image if selected
+        if (profileImageFile) {
+          const imageUrl = await uploadProfileImage(profileImageFile, authUserId);
+          farmerUpdates.profile_image_url = imageUrl;
+        }
+
+        const { error: farmerUpdateError } = await supabase
+          .from('farmer_profiles')
+          .update(farmerUpdates)
+          .eq('id', farmerProfile.id);
+
+        if (farmerUpdateError) throw farmerUpdateError;
+      }
+
+      // Create farmer profile if doesn't exist and user is farmer
+      if (role === 'farmer' && !farmerProfile) {
+        const newFarmerProfile: any = {
+          auth_user_id: authUserId,
+          accounts_user_id: user.id,
+          farm_name: farmName.trim(),
+          farm_location: farmLocation.trim(),
+          farm_size: farmSize ? parseFloat(farmSize) : null,
+          farm_size_unit: farmSizeUnit,
+          years_of_experience: yearsOfExperience ? parseInt(yearsOfExperience) : null,
+          certification: certification.trim() || null,
+          bio: bio.trim() || null,
+          crops_grown: cropsGrown.length > 0 ? cropsGrown : null,
+        };
+
+        if (profileImageFile) {
+          const imageUrl = await uploadProfileImage(profileImageFile, authUserId);
+          newFarmerProfile.profile_image_url = imageUrl;
+        }
+
+        const { error: createError } = await supabase
+          .from('farmer_profiles')
+          .insert([newFarmerProfile]);
+
+        if (createError) throw createError;
+      }
+
+      setEditingProfile(false);
+      setEditingFarmerProfile(false);
+      await loadAll();
+      setSuccess('Profile updated successfully!');
+    } catch (err: any) {
+      setError(`Failed to update profile: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const addCrop = () => {
+    const crop = newCrop.trim();
+    if (crop && !cropsGrown.includes(crop)) {
+      setCropsGrown([...cropsGrown, crop]);
+      setNewCrop('');
+    }
+  };
+
+  const removeCrop = (crop: string) => {
+    setCropsGrown(cropsGrown.filter(c => c !== crop));
+  };
+
+  // -------------------- Product Modal Functions --------------------
+  const resetProductForm = () => {
     setCropName('');
     setVariety('');
     setQuality('standard');
@@ -419,9 +626,7 @@ export default function ProfilePage() {
     setUnit('kg');
     setPricePerUnit('');
     setAvailableFrom(todayISO());
-    setSelectedCategoryId('');
     setDescription('');
-    setFarmerLocation('');
     setDistanceKm('');
     setLat(null);
     setLng(null);
@@ -438,45 +643,32 @@ export default function ProfilePage() {
       setActiveTab('overview');
       return;
     }
-    resetForm();
+    resetProductForm();
     setShowAddModal(true);
-    if (categories.length === 0) loadCategories();
   };
 
   const closeAddModal = () => {
     setShowAddModal(false);
-    resetForm();
+    resetProductForm();
   };
 
-  const requestLocation = async () => {
-    setModalError(null);
-    setIsGettingLocation(true);
+  const uploadProduceImage = async (file: File, farmerId: string) => {
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const fileName = `produce_${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
+    const path = `${farmerId}/${fileName}`;
 
-    if (!navigator.geolocation) {
-      setModalError('Geolocation is not supported by this browser.');
-      setIsGettingLocation(false);
-      return;
-    }
-
-    try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0,
-        });
+    const { error: uploadError } = await supabase.storage
+      .from(PRODUCE_BUCKET)
+      .upload(path, file, {
+        upsert: true,
+        contentType: file.type || 'image/jpeg',
       });
+    
+    if (uploadError) throw uploadError;
 
-      const { latitude, longitude } = position.coords;
-      setLat(latitude);
-      setLng(longitude);
-
-      if (!farmerLocation) setFarmerLocation(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
-    } catch (err: any) {
-      setModalError(`Failed to get location: ${err?.message || 'Permission denied or timeout'}`);
-    } finally {
-      setIsGettingLocation(false);
-    }
+    const { data } = supabase.storage.from(PRODUCE_BUCKET).getPublicUrl(path);
+    if (!data?.publicUrl) throw new Error('Failed to generate public URL for image.');
+    return data.publicUrl;
   };
 
   const handleFileSelect = (file: File | null) => {
@@ -503,33 +695,11 @@ export default function ProfilePage() {
   const removeImage = () => {
     setImageFile(null);
     setImagePreview(null);
-    const inp = document.getElementById('image-upload') as HTMLInputElement | null;
-    if (inp) inp.value = '';
-  };
-
-  const uploadProduceImage = async (file: File, farmerId: string) => {
-    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
-    const fileName = `produce_${Date.now()}_${Math.random().toString(16).slice(2)}.${ext}`;
-    const path = `${farmerId}/${fileName}`;
-
-    const { error: uploadError } = await supabase.storage.from(PRODUCE_BUCKET).upload(path, file, {
-      upsert: true,
-      contentType: file.type || 'image/jpeg',
-    });
-    if (uploadError) throw uploadError;
-
-    const { data } = supabase.storage.from(PRODUCE_BUCKET).getPublicUrl(path);
-    if (!data?.publicUrl) throw new Error('Failed to generate public URL for image.');
-    return data.publicUrl;
   };
 
   const saveProduct = async () => {
     if (!user || !authUserId) {
-      setModalError('User not authenticated. Please sign in again.');
-      return;
-    }
-    if (role !== 'farmer') {
-      setModalError('Only farmers can add products.');
+      setModalError('User not authenticated.');
       return;
     }
 
@@ -537,27 +707,41 @@ export default function ProfilePage() {
     setSavingProduct(true);
 
     const name = cropName.trim();
-    const locationText = farmerLocation.trim();
     const quantityNum = Number(quantity.trim());
     const priceNum = Number(pricePerUnit.trim());
 
-    if (!name) return (setModalError('Crop name is required.'), setSavingProduct(false));
-    if (!locationText) return (setModalError('Produce location is required.'), setSavingProduct(false));
-    if (!Number.isFinite(quantityNum) || quantityNum <= 0)
-      return (setModalError('Quantity must be a valid number greater than 0.'), setSavingProduct(false));
-    if (!Number.isFinite(priceNum) || priceNum <= 0)
-      return (setModalError('Price per unit must be a valid number greater than 0.'), setSavingProduct(false));
-    if (!availableFrom) return (setModalError('Available from date is required.'), setSavingProduct(false));
+    if (!name) {
+      setModalError('Crop name is required.');
+      setSavingProduct(false);
+      return;
+    }
+    if (!Number.isFinite(quantityNum) || quantityNum <= 0) {
+      setModalError('Quantity must be a valid number greater than 0.');
+      setSavingProduct(false);
+      return;
+    }
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      setModalError('Price per unit must be a valid number greater than 0.');
+      setSavingProduct(false);
+      return;
+    }
+    if (!availableFrom) {
+      setModalError('Available from date is required.');
+      setSavingProduct(false);
+      return;
+    }
 
     try {
       let photoUrl: string | null = null;
-      if (imageFile) photoUrl = await uploadProduceImage(imageFile, authUserId);
+      if (imageFile) {
+        photoUrl = await uploadProduceImage(imageFile, authUserId);
+      }
 
-      const payload: Record<string, any> = {
+      const payload = {
         farmer_id: authUserId,
         farmer_name: fullName,
-        farmer_location: locationText,
-        farmer_phone: user.phone_number ?? null,
+        farmer_location: farmLocation || location || 'Unknown',
+        farmer_phone: phoneNumber || null,
         crop_name: name,
         variety: variety.trim() || null,
         quality,
@@ -565,41 +749,32 @@ export default function ProfilePage() {
         unit,
         price_per_unit: priceNum,
         distance_km: distanceKm.trim() ? Number(distanceKm) : null,
-        location_lat: lat,
-        location_lng: lng,
-        google_maps_link: buildGoogleMapsLink(lat, lng),
+        location_lat: lat || locationLat,
+        location_lng: lng || locationLng,
         available_from: availableFrom,
         is_available: true,
         photo: photoUrl,
         description: description.trim() || null,
+        listed_at: new Date().toISOString(),
       };
 
-      if (selectedCategoryId !== '') payload.category_id = selectedCategoryId;
+      const { error: insertError } = await supabase
+        .from('farm_produce')
+        .insert([payload]);
 
-      const { error: insertError } = await supabase.from('farm_produce').insert([payload]);
+      if (insertError) throw insertError;
 
-      if (insertError) {
-        if (insertError.code === '42501' || insertError.message.toLowerCase().includes('row-level security')) {
-          setModalError('Permission denied (RLS). Please fix your RLS policies for farm_produce.');
-        } else {
-          setModalError(`Database Error: ${insertError.message}`);
-        }
-        setSavingProduct(false);
-        return;
-      }
-
-      setSavingProduct(false);
       closeAddModal();
       await loadAll();
-      setActiveTab('products');
-      setSuccess('Product added successfully');
+      setSuccess('Product added successfully!');
     } catch (err: any) {
-      setModalError(`Unexpected Error: ${err?.message || 'Failed to save product'}`);
+      setModalError(`Failed to save product: ${err?.message || 'Unknown error'}`);
+    } finally {
       setSavingProduct(false);
     }
   };
 
-  // -------------------- UI bits --------------------
+  // -------------------- UI Components --------------------
   const StatCard = ({
     title,
     value,
@@ -626,7 +801,7 @@ export default function ProfilePage() {
           <div>
             <p className="text-sm font-medium text-gray-600">{title}</p>
             <p className="mt-2 text-2xl font-bold text-gray-900">{value}</p>
-            {subtitle ? <p className="mt-1 text-xs text-gray-500">{subtitle}</p> : null}
+            {subtitle && <p className="mt-1 text-xs text-gray-500">{subtitle}</p>}
           </div>
           <div className={`h-12 w-12 rounded-xl ${colorClasses[color]} text-white flex items-center justify-center shadow-md`}>
             <Icon className="h-5 w-5" />
@@ -649,24 +824,17 @@ export default function ProfilePage() {
         <Icon className="h-4 w-4" />
       </div>
       <span>{label}</span>
-      {typeof count === 'number' ? (
+      {typeof count === 'number' && (
         <span className={`ml-auto rounded-full px-2.5 py-1 text-xs font-medium ${activeTab === tab ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>
           {count}
         </span>
-      ) : null}
+      )}
     </button>
   );
 
   const ProductCard = ({ product }: { product: FarmProduceRow }) => {
     const totalPrice = Number(product.quantity || 0) * Number(product.price_per_unit || 0);
     const qualityColor = getQualityColor(product.quality);
-
-    const categoryName = (() => {
-      const pc = product.produce_categories;
-      if (!pc) return '—';
-      if (Array.isArray(pc)) return pc[0]?.name || '—';
-      return pc.name || '—';
-    })();
 
     return (
       <div className="rounded-2xl border border-gray-200 bg-white p-6 hover:shadow-xl hover:border-emerald-200 transition">
@@ -692,10 +860,6 @@ export default function ProfilePage() {
               <div>
                 <h3 className="text-lg font-bold text-gray-900">{product.crop_name}</h3>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800">
-                    <Tag className="h-3 w-3" />
-                    {categoryName}
-                  </span>
                   <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-white ${qualityColor}`}>
                     <Star className="h-3 w-3" />
                     {cap(product.quality)}
@@ -755,11 +919,11 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {product.description ? (
+            {product.description && (
               <div className="mt-4 border-t border-gray-100 pt-4">
                 <p className="text-sm text-gray-600 line-clamp-2">{product.description}</p>
               </div>
-            ) : null}
+            )}
 
             <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-4">
               <div className="text-xs text-gray-500">{product.is_available ? 'Available for sale' : 'Not available'}</div>
@@ -779,7 +943,7 @@ export default function ProfilePage() {
     );
   };
 
-  const OrderCard = ({ order }: { order: BuyerOrderRow | FarmerOrderRow }) => {
+  const OrderCard = ({ order }: { order: BuyerOrderRow }) => {
     const total = Number(order.quantity_kg || 0) * Number(order.agreed_price_per_kg || 0);
     const badge =
       order.status === 'pending'
@@ -797,8 +961,7 @@ export default function ProfilePage() {
               {order.quantity_kg} kg • {formatCurrency(Number(order.agreed_price_per_kg || 0))}/kg
             </p>
             <p className="mt-1 text-xs text-gray-500">
-              {('buyer_name' in order ? `Buyer: ${order.buyer_name}` : '')}
-              {('farmer_name' in order ? ` • Farmer: ${order.farmer_name}` : '')}
+              {role === 'buyer' ? `Farmer: ${order.farmer_name}` : `Buyer: ${order.buyer_name}`}
               {order.distance_km !== null ? ` • ${Number(order.distance_km)} km` : ''}
             </p>
             <p className="mt-2 text-xs text-gray-500">Created: {formatDateTime(order.created_at)}</p>
@@ -815,6 +978,453 @@ export default function ProfilePage() {
       </div>
     );
   };
+
+  // -------------------- Settings Tab Content --------------------
+  const renderSettingsTab = () => (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-gray-200 bg-white p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">Profile Settings</h3>
+            <p className="text-sm text-gray-600">Update your personal information</p>
+          </div>
+          <button
+            onClick={() => setEditingProfile(!editingProfile)}
+            className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition flex items-center gap-2"
+          >
+            {editingProfile ? <X className="h-4 w-4" /> : <Edit className="h-4 w-4" />}
+            {editingProfile ? 'Cancel' : 'Edit Profile'}
+          </button>
+        </div>
+
+        {editingProfile ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">First Name</label>
+                <input
+                  type="text"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder="John"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Last Name</label>
+                <input
+                  type="text"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder="Doe"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Email</label>
+              <input
+                type="email"
+                value={user?.email || ''}
+                disabled
+                className="w-full rounded-lg border border-gray-300 bg-gray-50 px-4 py-2.5"
+              />
+              <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Phone Number</label>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                placeholder="+256 700 123456"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-700">Location</label>
+                <button
+                  type="button"
+                  onClick={requestLocation}
+                  disabled={isGettingLocation}
+                  className="text-xs text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
+                >
+                  <Navigation className={`h-3 w-3 ${isGettingLocation ? 'animate-spin' : ''}`} />
+                  {isGettingLocation ? 'Getting location...' : 'Use current location'}
+                </button>
+              </div>
+              <input
+                type="text"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                placeholder="City, Region"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Latitude</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={locationLat || ''}
+                  onChange={(e) => setLocationLat(e.target.value ? parseFloat(e.target.value) : null)}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder="-1.2921"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Longitude</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={locationLng || ''}
+                  onChange={(e) => setLocationLng(e.target.value ? parseFloat(e.target.value) : null)}
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                  placeholder="36.8219"
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">First Name</label>
+                <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{firstName || 'Not set'}</p>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Last Name</label>
+                <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{lastName || 'Not set'}</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Email</label>
+              <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{user?.email}</p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Phone Number</label>
+              <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{phoneNumber || 'Not set'}</p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-gray-700">Location</label>
+              <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{location || 'Not set'}</p>
+            </div>
+
+            {locationLat && locationLng && (
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">Coordinates</label>
+                <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">
+                  {locationLat.toFixed(6)}, {locationLng.toFixed(6)}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Farmer Profile Section */}
+      {role === 'farmer' && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">Farm Profile</h3>
+              <p className="text-sm text-gray-600">Update your farm information</p>
+            </div>
+            <button
+              onClick={() => setEditingFarmerProfile(!editingFarmerProfile)}
+              className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition flex items-center gap-2"
+            >
+              {editingFarmerProfile ? <X className="h-4 w-4" /> : <Edit className="h-4 w-4" />}
+              {editingFarmerProfile ? 'Cancel' : 'Edit Farm Profile'}
+            </button>
+          </div>
+
+          {editingFarmerProfile ? (
+            <div className="space-y-4">
+              {/* Profile Image */}
+              <div className="flex flex-col md:flex-row gap-6">
+                <div className="md:w-1/3">
+                  <label className="mb-2 block text-sm font-medium text-gray-700">Profile Image</label>
+                  <div className="relative">
+                    <div className="h-48 w-full rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden bg-gray-50">
+                      {profileImagePreview ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={profileImagePreview} alt="Profile" className="h-full w-full object-cover" />
+                      ) : (
+                        <User className="h-16 w-16 text-gray-400" />
+                      )}
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <label className="flex-1">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleProfileImageSelect(e.target.files?.[0] || null)}
+                          className="hidden"
+                        />
+                        <div className="cursor-pointer rounded-lg bg-emerald-600 px-4 py-2 text-center text-sm font-medium text-white hover:bg-emerald-700 transition">
+                          Upload
+                        </div>
+                      </label>
+                      {profileImagePreview && (
+                        <button
+                          onClick={removeProfileImage}
+                          className="flex-1 rounded-lg border border-red-300 px-4 py-2 text-center text-sm font-medium text-red-600 hover:bg-red-50 transition"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:w-2/3 space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Farm Name *</label>
+                    <input
+                      type="text"
+                      value={farmName}
+                      onChange={(e) => setFarmName(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                      placeholder="Green Valley Farm"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Farm Location *</label>
+                    <input
+                      type="text"
+                      value={farmLocation}
+                      onChange={(e) => setFarmLocation(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                      placeholder="Wakiso, Central Region"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">Farm Size</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={farmSize}
+                          onChange={(e) => setFarmSize(e.target.value)}
+                          className="flex-1 rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                          placeholder="5.0"
+                        />
+                        <select
+                          value={farmSizeUnit}
+                          onChange={(e) => setFarmSizeUnit(e.target.value)}
+                          className="rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                        >
+                          <option value="acres">Acres</option>
+                          <option value="hectares">Hectares</option>
+                          <option value="square_meters">Square Meters</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">Years of Experience</label>
+                      <input
+                        type="number"
+                        value={yearsOfExperience}
+                        onChange={(e) => setYearsOfExperience(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                        placeholder="5"
+                        min="0"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Certification</label>
+                    <input
+                      type="text"
+                      value={certification}
+                      onChange={(e) => setCertification(e.target.value)}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                      placeholder="Organic, Fair Trade, etc."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Bio</label>
+                    <textarea
+                      value={bio}
+                      onChange={(e) => setBio(e.target.value)}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                      placeholder="Tell us about your farm..."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Crops Grown</label>
+                    <div className="flex gap-2 mb-2">
+                      <input
+                        type="text"
+                        value={newCrop}
+                        onChange={(e) => setNewCrop(e.target.value)}
+                        className="flex-1 rounded-lg border border-gray-300 px-4 py-2.5 focus:border-emerald-500 focus:ring-emerald-500"
+                        placeholder="Add a crop"
+                        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCrop())}
+                      />
+                      <button
+                        type="button"
+                        onClick={addCrop}
+                        className="rounded-lg bg-emerald-600 px-4 py-2.5 text-white hover:bg-emerald-700 transition"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {cropsGrown.map((crop) => (
+                        <span
+                          key={crop}
+                          className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-sm text-emerald-800"
+                        >
+                          {crop}
+                          <button
+                            type="button"
+                            onClick={() => removeCrop(crop)}
+                            className="text-emerald-600 hover:text-emerald-800"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-col md:flex-row gap-6">
+                <div className="md:w-1/3">
+                  <div className="h-48 w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                    {farmerProfile?.profile_image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={farmerProfile.profile_image_url}
+                        alt="Farm Profile"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center">
+                        <Home className="h-16 w-16 text-gray-400" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="md:w-2/3 space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Farm Name</label>
+                    <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{farmName || 'Not set'}</p>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Farm Location</label>
+                    <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{farmLocation || 'Not set'}</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">Farm Size</label>
+                      <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">
+                        {farmSize ? `${farmSize} ${farmSizeUnit}` : 'Not set'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">Years of Experience</label>
+                      <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">
+                        {yearsOfExperience || 'Not set'} years
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Certification</label>
+                    <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{certification || 'Not set'}</p>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">Bio</label>
+                    <p className="rounded-lg bg-gray-50 px-4 py-2.5 text-gray-900">{bio || 'Not set'}</p>
+                  </div>
+
+                  {cropsGrown.length > 0 && (
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">Crops Grown</label>
+                      <div className="flex flex-wrap gap-2">
+                        {cropsGrown.map((crop) => (
+                          <span
+                            key={crop}
+                            className="rounded-full bg-emerald-100 px-3 py-1 text-sm text-emerald-800"
+                          >
+                            {crop}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Save Button */}
+      {(editingProfile || editingFarmerProfile) && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-6">
+          <div className="flex items-center justify-end gap-3">
+            <button
+              onClick={() => {
+                setEditingProfile(false);
+                setEditingFarmerProfile(false);
+              }}
+              className="rounded-xl border border-gray-300 px-6 py-3 font-medium text-gray-700 hover:bg-gray-50 transition"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveUserProfile}
+              disabled={savingProfile}
+              className="rounded-xl bg-emerald-600 px-6 py-3 font-medium text-white hover:bg-emerald-700 transition flex items-center gap-2 disabled:opacity-50"
+            >
+              {savingProfile ? (
+                <>
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4" />
+                  Save Changes
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   // -------------------- Loading --------------------
   if (loading) {
@@ -925,23 +1535,23 @@ export default function ProfilePage() {
                     {cap(role)}
                   </span>
 
-                  {role !== 'guest' && user?.email ? (
+                  {role !== 'guest' && user?.email && (
                     <div className="flex items-center gap-3 text-sm text-gray-600">
                       <span className="inline-flex items-center gap-2">
                         <Mail className="h-4 w-4 text-gray-400" />
                         {user.email}
                       </span>
-                      {user.phone_number ? (
+                      {phoneNumber && (
                         <>
                           <span className="text-gray-300">•</span>
                           <span className="inline-flex items-center gap-2">
                             <Phone className="h-4 w-4 text-gray-400" />
-                            {user.phone_number}
+                            {phoneNumber}
                           </span>
                         </>
-                      ) : null}
+                      )}
                     </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
             </div>
@@ -963,7 +1573,7 @@ export default function ProfilePage() {
                 Discover
               </Link>
 
-              {role === 'farmer' ? (
+              {role === 'farmer' && (
                 <button
                   onClick={openAddModal}
                   className="rounded-xl border-2 border-emerald-600 bg-white px-5 py-2.5 font-bold text-emerald-700 hover:bg-emerald-50 transition inline-flex items-center gap-2"
@@ -971,31 +1581,27 @@ export default function ProfilePage() {
                   <Plus className="h-4 w-4" />
                   Add Product
                 </button>
-              ) : null}
+              )}
             </div>
           </div>
 
           {/* Stats */}
           <div className="mt-8 grid grid-cols-1 md:grid-cols-4 gap-6">
-            {role === 'farmer' && (
+            {role === 'farmer' ? (
               <>
                 <StatCard title="Total Products" value={String(products.length)} icon={Package} color="emerald" subtitle={`${activeProducts} active`} />
                 <StatCard title="Potential Revenue" value={formatCurrency(totalRevenue)} icon={BadgeDollarSign} color="amber" subtitle="Based on listed stock" />
                 <StatCard title="Avg. Price" value={formatCurrency(avgPrice)} icon={DollarSign} color="blue" subtitle="Per unit avg" />
                 <StatCard title="Orders" value={String(farmerOrders.length)} icon={ShoppingBag} color="purple" subtitle="From buyers" />
               </>
-            )}
-
-            {role === 'buyer' && (
+            ) : role === 'buyer' ? (
               <>
                 <StatCard title="My Orders" value={String(buyerOrders.length)} icon={ShoppingBag} color="blue" subtitle="All statuses" />
                 <StatCard title="Estimated Spend" value={formatCurrency(buyerSpend)} icon={BadgeDollarSign} color="amber" subtitle="Based on orders" />
-                <StatCard title="Explore" value={'Discover'} icon={MapPin} color="emerald" subtitle="Sellers near you" />
-                <StatCard title="Trending" value={'Hot'} icon={BarChart3} color="purple" subtitle="Popular listings" />
+                <StatCard title="Explore" value="Discover" icon={MapPin} color="emerald" subtitle="Sellers near you" />
+                <StatCard title="Trending" value="Hot" icon={BarChart3} color="purple" subtitle="Popular listings" />
               </>
-            )}
-
-            {role === 'guest' && (
+            ) : (
               <>
                 <StatCard title="Mode" value="Guest" icon={User} color="blue" subtitle="Limited features" />
                 <StatCard title="Browse" value="Marketplace" icon={Globe} color="emerald" subtitle="See listings" />
@@ -1010,20 +1616,22 @@ export default function ProfilePage() {
         <div className="mt-8 flex flex-wrap gap-3">
           <TabButton tab="overview" label="Overview" icon={User} />
 
-          {role === 'farmer' ? (
+          {role === 'farmer' && (
             <TabButton tab="products" label="My Products" icon={Package} count={products.length} />
-          ) : null}
+          )}
 
-          {(role === 'buyer' || role === 'farmer') ? (
+          {(role === 'buyer' || role === 'farmer') && (
             <TabButton
               tab="orders"
               label={role === 'buyer' ? 'My Orders' : 'Orders'}
               icon={ShoppingBag}
               count={role === 'buyer' ? buyerOrders.length : farmerOrders.length}
             />
-          ) : null}
+          )}
 
-          {role !== 'guest' ? <TabButton tab="analytics" label="Analytics" icon={BarChart3} /> : null}
+          {role !== 'guest' && <TabButton tab="analytics" label="Analytics" icon={BarChart3} />}
+          
+          {role !== 'guest' && <TabButton tab="settings" label="Settings" icon={Settings} />}
         </div>
 
         {/* Tab Content */}
@@ -1042,9 +1650,9 @@ export default function ProfilePage() {
               </h3>
               <p className="mt-3 text-gray-600 max-w-2xl mx-auto">
                 {role === 'farmer'
-                  ? 'Use “My Products” to add and manage your listings. Buyers will contact you directly.'
+                  ? 'Use "My Products" to add and manage your listings. Buyers will contact you directly.'
                   : role === 'buyer'
-                  ? 'Use “My Orders” to track purchases and “Discover” to find sellers near you.'
+                  ? 'Use "My Orders" to track purchases and "Discover" to find sellers near you.'
                   : 'You can browse products, trending, and discover sellers. Sign in to buy or sell.'}
               </p>
 
@@ -1063,23 +1671,23 @@ export default function ProfilePage() {
                   Discover Nearby
                 </Link>
 
-                {!isLoggedIn ? (
+                {!isLoggedIn && (
                   <Link
                     href="/login"
                     className="rounded-xl border-2 border-emerald-600 px-6 py-3 font-bold text-emerald-700 hover:bg-emerald-50 transition"
                   >
                     Sign In
                   </Link>
-                ) : null}
+                )}
 
-                {role === 'farmer' ? (
+                {role === 'farmer' && (
                   <button
                     onClick={openAddModal}
                     className="rounded-xl border-2 border-emerald-600 px-6 py-3 font-bold text-emerald-700 hover:bg-emerald-50 transition"
                   >
                     Add Product
                   </button>
-                ) : null}
+                )}
               </div>
             </div>
           )}
@@ -1140,21 +1748,19 @@ export default function ProfilePage() {
                     Browse Marketplace
                   </Link>
                 </div>
-              ) : null}
-
-              {role === 'farmer' && farmerOrders.length === 0 ? (
+              ) : role === 'farmer' && farmerOrders.length === 0 ? (
                 <div className="rounded-2xl border border-gray-200 bg-white p-10 text-center">
                   <ShoppingBag className="h-12 w-12 text-gray-400 mx-auto" />
                   <h3 className="mt-4 text-xl font-bold text-gray-900">No Orders Yet</h3>
                   <p className="mt-2 text-gray-600">When buyers order your listings, they will appear here.</p>
                 </div>
-              ) : null}
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {(role === 'buyer' ? buyerOrders : farmerOrders).map((o: any) => (
-                  <OrderCard key={o.id} order={o} />
-                ))}
-              </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {(role === 'buyer' ? buyerOrders : farmerOrders).map((o) => (
+                    <OrderCard key={o.id} order={o} />
+                  ))}
+                </div>
+              )}
             </>
           )}
 
@@ -1162,9 +1768,11 @@ export default function ProfilePage() {
             <div className="rounded-2xl border border-gray-200 bg-white p-10 text-center">
               <BarChart3 className="h-12 w-12 text-gray-400 mx-auto" />
               <h3 className="mt-4 text-xl font-bold text-gray-900">Analytics</h3>
-              <p className="mt-2 text-gray-600">We’ll add charts here (sales over time, top crops, demand areas, etc.).</p>
+              <p className="mt-2 text-gray-600">We'll add charts here (sales over time, top crops, demand areas, etc.).</p>
             </div>
           )}
+
+          {activeTab === 'settings' && role !== 'guest' && renderSettingsTab()}
         </div>
       </main>
 
@@ -1212,23 +1820,6 @@ export default function ProfilePage() {
                         className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                         placeholder="e.g. Coffee"
                       />
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-sm font-bold text-gray-700">Category</label>
-                      <select
-                        value={selectedCategoryId}
-                        onChange={(e) => setSelectedCategoryId(e.target.value ? Number(e.target.value) : '')}
-                        className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        disabled={categoriesLoading}
-                      >
-                        <option value="">Select category (optional)</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
                     </div>
 
                     <div>
@@ -1314,16 +1905,6 @@ export default function ProfilePage() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-bold text-gray-700">Location Name *</label>
-                      <input
-                        value={farmerLocation}
-                        onChange={(e) => setFarmerLocation(e.target.value)}
-                        className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Kasese, Fort Portal..."
-                      />
-                    </div>
-
                     <div>
                       <label className="mb-2 block text-sm font-bold text-gray-700">Distance (km)</label>
                       <input
