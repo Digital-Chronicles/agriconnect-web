@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import supabase from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';
 
 type Role = 'admin' | 'farmer' | 'buyer' | 'logistics' | 'finance' | 'guest';
 
@@ -12,13 +12,28 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     const handleAuthCallback = async () => {
       try {
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+
+        if (code) {
+          const { error: exchangeError } =
+            await supabase.auth.exchangeCodeForSession(code);
+
+          if (exchangeError) {
+            console.error('Code exchange failed:', exchangeError.message);
+            router.replace('/login?error=oauth_callback_failed');
+            return;
+          }
+        }
+
         const {
           data: { session },
-          error,
+          error: sessionError,
         } = await supabase.auth.getSession();
 
-        if (error || !session?.user) {
-          router.replace('/login');
+        if (sessionError || !session?.user) {
+          console.error('Session fetch failed:', sessionError?.message);
+          router.replace('/login?error=no_session');
           return;
         }
 
@@ -30,11 +45,23 @@ export default function AuthCallbackPage() {
 
         const firstName =
           String(meta.first_name || '').trim() || nameParts[0] || '';
+
         const lastName =
           String(meta.last_name || '').trim() ||
           (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
 
-        const role = (meta.role || 'guest') as Role;
+        const allowedRoles: Role[] = [
+          'admin',
+          'farmer',
+          'buyer',
+          'logistics',
+          'finance',
+          'guest',
+        ];
+
+        const role: Role = allowedRoles.includes(meta.role as Role)
+          ? (meta.role as Role)
+          : 'guest';
 
         const { error: upsertError } = await supabase.rpc(
           'upsert_accounts_user_from_auth',
@@ -53,7 +80,7 @@ export default function AuthCallbackPage() {
 
         if (upsertError) {
           console.error('Profile sync failed:', upsertError.message);
-          router.replace('/login');
+          router.replace('/login?error=profile_sync_failed');
           return;
         }
 
@@ -70,7 +97,7 @@ export default function AuthCallbackPage() {
         router.replace('/dashboard');
       } catch (err) {
         console.error('Auth callback error:', err);
-        router.replace('/login');
+        router.replace('/login?error=unexpected_callback_error');
       }
     };
 
